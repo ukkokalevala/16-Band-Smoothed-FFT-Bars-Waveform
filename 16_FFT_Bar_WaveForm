@@ -1,0 +1,75 @@
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <arduinoFFT.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+#define OLED_ADDR     0x3C
+
+#define SOUND_PIN 4
+#define SDA_PIN 7
+#define SCL_PIN 6
+
+#define SAMPLES 64
+#define SAMPLING_FREQUENCY 4000
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+double vReal[SAMPLES];
+double vImag[SAMPLES];
+ArduinoFFT<double> FFT(vReal, vImag, SAMPLES, SAMPLING_FREQUENCY);
+
+// FFT bar configuration
+#define NUM_BARS 16
+int barWidth = SCREEN_WIDTH / NUM_BARS;
+float barValues[NUM_BARS] = {0};      // smoothed values
+float smoothingFactor = 0.2;          // between 0 (slow) and 1 (fast)
+
+unsigned long sampling_period_us;
+unsigned long lastMicros;
+
+void setup() {
+  Wire.begin(SDA_PIN, SCL_PIN);
+  display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
+  display.clearDisplay();
+  display.display();
+
+  analogReadResolution(12);  // ESP32-C3: 0–4095
+  sampling_period_us = round(1000000.0 / SAMPLING_FREQUENCY);
+}
+
+void loop() {
+  // Sample sound
+  for (int i = 0; i < SAMPLES; i++) {
+    lastMicros = micros();
+    vReal[i] = analogRead(SOUND_PIN);
+    vImag[i] = 0;
+    while ((micros() - lastMicros) < sampling_period_us);
+  }
+
+  // Run FFT
+  FFT.dcRemoval();
+  FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
+  FFT.compute(FFTDirection::Forward);
+  FFT.complexToMagnitude();
+
+  // Smoothing & bar assignment
+  for (int i = 0; i < NUM_BARS; i++) {
+    int index = (i + 2) * (SAMPLES / (2 * NUM_BARS)); // skip first 2 (DC noise)
+    double raw = vReal[index];
+    float target = map(raw, 0, 500, 0, SCREEN_HEIGHT);  // Scale
+    target = constrain(target, 0, SCREEN_HEIGHT);
+    barValues[i] = (1.0 - smoothingFactor) * barValues[i] + smoothingFactor * target;
+  }
+
+  // Draw smoothed bars
+  display.clearDisplay();
+  for (int i = 0; i < NUM_BARS; i++) {
+    int height = (int)barValues[i];
+    display.fillRect(i * barWidth, SCREEN_HEIGHT - height, barWidth - 1, height, WHITE);
+  }
+  display.display();
+
+  delay(10);  // For display stability
+}
